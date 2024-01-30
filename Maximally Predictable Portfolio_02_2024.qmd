@@ -1,0 +1,918 @@
+---
+title: "report"
+format: html
+editor: visual
+---
+
+# Libraries
+
+```{r}
+library(quantmod)
+library(forecast)
+library(dygraphs)
+library(ggplot2)
+library(factoextra)
+library(FactoMineR)
+library(rollRegres)
+library(PerformanceAnalytics)
+library(matlib)
+library(summarytools)
+```
+
+# Data Import
+
+```{r}
+work<- read.csv("C:\\Users\\lollo\\OneDrive\\Desktop\\Project Rennes\\2nd_Rennes\\top10\\workpaper", sep =",", dec=".")
+work<-work[1:1204,-1]
+rownames(work)<- work$Time
+work$Time<-NULL
+original<- work
+```
+
+```{r}
+descriptive<-as.matrix(descr(work))
+```
+
+```{r}
+write.csv2(descriptive, "C:\\Users\\lollo\\OneDrive\\Desktop\\statadescr.csv", row.names=TRUE)
+```
+
+# Computing returns
+
+```{r}
+ret = apply(original,2, function (x) Delt(x, k=1,type="log"))
+ret<- na.omit(ret)
+ret <-data.frame(ret)
+rownames(ret) <- rownames(work[-1,])
+ret_lag1<-apply(original,2,function (x) Delt(x,k=2,type="log"))
+ret_lag1<-na.omit(ret_lag1)
+rownames(ret_lag1)<-rownames(ret[-1,])
+lwork<-log(work)
+```
+
+# Visualization
+
+## Prices
+
+```{r}
+cols <- names(work)[-1]
+
+for(col in cols) {
+  col_name <- colnames(work)[which(colnames(work) == col)]
+  show(dygraph(data = work[, c("Close_BTC", col)], main = paste("Close BTC and", col_name)) %>%
+    dyRangeSelector() %>%
+    dySeries("Close_BTC", axis = "y2"))
+}
+```
+
+## Returns
+
+```{r}
+cols <- names(ret)[-1]
+
+for(col in cols) {
+  col_name <- colnames(ret)[which(colnames(ret) == col)]
+  show(dygraph(data = ret[, c("Close_BTC", col)], main = paste("Close BTC and", col_name)) %>%
+    dyRangeSelector() %>%
+    dySeries("Close_BTC", axis = "y2"))
+}
+```
+
+# Exploratory Analysis
+
+## Auto Correlation
+
+```{r}
+features <- colnames(ret) 
+for (feat in features){   
+  show(forecast::ggAcf(x=ret[, feat],
+                       plot = T,
+                       lag.max=7) + ggtitle(paste("ACF of", feat)))}
+```
+
+```{r}
+autoc <- Acf(ret, plot = FALSE, lag.max = 6)
+autoc <- autoc$acf
+autoc<-unlist(autoc)
+
+autoco<- cbind(autoc[2:7, 1,1], autoc[2:7, 2,2],autoc[2:7, 3,3],autoc[2:7, 4,4],autoc[2:7, 5,5],autoc[2:7, 6,6],autoc[2:7, 7,7],autoc[2:7, 8,8],autoc[2:7, 9,9],autoc[2:7, 10,10])
+colnames(autoco)<-colnames(ret)
+auto_correlation_lag6<-autoco
+rown<-c("lag1","lag2","lag3","lag4","lag5","lag6")
+rownames(auto_correlation_lag6)<-rown
+data.frame(auto_correlation_lag6)
+```
+
+## Cross Correlation
+
+```{r}
+cols <- names(ret)
+n_cols <- length(cols)
+cross_correlation <- matrix(NA, nrow = n_cols, ncol = n_cols, dimnames = list(cols, cols))
+
+for (i in 1:n_cols) {
+  for (j in 1:n_cols) {
+    if (i == j) {
+      ccf_result <- ccf(ret[[cols[i]]], ret[[cols[i]]], lag.max = 1, plot = FALSE)
+      cross_correlation[i, j] <- ccf_result$acf[1]
+    } else  {
+      ccf_result <- ccf(ret[[cols[i]]], ret[[cols[j]]], lag.max = 1, plot = FALSE)
+      cross_correlation[i, j] <- ccf_result$acf[1]
+      cross_correlation[j, i] <- ccf_result$acf[1]
+      
+    }
+  }
+}
+
+cross_correlation<-data.frame(cross_correlation)
+cross_correlation["mean",]<-colMeans(cross_correlation)
+tail(cross_correlation)
+```
+
+## PCA Computation
+
+```{r}
+ret_pca <- FactoMineR::PCA(ret,
+                           scale.unit = TRUE,
+                               ncp = ncol(ret),
+                               graph = TRUE)
+```
+
+```{r}
+fviz_pca_ind(ret_pca,
+             geom.ind = "point",
+             addEllipses = TRUE, 
+             legend.title = "Groups"
+             )
+```
+
+### Summary Tabs: contribution-eigenvectors
+
+```{r}
+tab_3 <- as.matrix(ret_pca$var$contrib)
+tab_3<-rbind(tab_3,t(ret_pca$eig))
+tab_3<-data.frame(tab_3)
+tab_3
+```
+
+### Summary Tabs : First Order Cross-Correlation of PCs
+
+```{r}
+tab<-data.frame(ret_pca$var$coord)
+cols <- names(tab)
+n_cols <- length(cols)
+cross_correlation <- matrix(NA, nrow = n_cols, ncol = n_cols, dimnames = list(cols, cols))
+
+for (i in 1:n_cols) {
+  for (j in 1:n_cols) {
+    if (i == j) {
+      ccf_result <- ccf(tab[[cols[i]]], tab[[cols[i]]], lag.max = 1, plot = FALSE)
+      cross_correlation[i, j] <- ccf_result$acf[1]
+    } else  {
+      ccf_result <- ccf(tab[[cols[i]]], tab[[cols[j]]], lag.max = 1, plot = FALSE)
+      cross_correlation[i, j] <- ccf_result$acf[1]
+      cross_correlation[j, i] <- ccf_result$acf[1]
+      
+    }
+  }
+}
+
+data.frame(cross_correlation)
+```
+
+# MPP Approach
+
+## Extracting scores
+
+```{r}
+individuals_ret<-ret_pca$ind$coord
+#individuals_ret<-ret
+#individuals_ret_lag= apply(original,2,function(x) Delt(x,k=window))
+```
+
+## Computing lagged scores
+
+```{r}
+window<-1
+individuals_ret_lag = apply(individuals_ret,2, function (x) Delt(x, k=window))
+individuals_ret_lag<- na.omit(individuals_ret_lag)
+rownames(individuals_ret_lag)<-rownames(ret[-c(1:window),])
+```
+
+```{r}
+ret_lag<-apply(original,2, function (x) Delt(x, k=window+1))
+ret_lag<- na.omit(ret_lag)
+rownames(ret_lag)<-rownames(ret[-c(1:window),])
+```
+
+### Regression Analysis
+
+```{r}
+coordinates<-data.frame(individuals_ret_lag)
+rownames(coordinates)<-rownames(ret[-c(1:window),])
+```
+
+```{r}
+variables <- coordinates
+results <- data.frame()
+
+epsilon <- data.frame(row.names = rownames(coordinates))
+coef <- data.frame()
+
+for (col_y in colnames(ret)) {
+  formula <- as.formula(paste(col_y, "~ ."))
+  data <- cbind(ret[-c(1:window), col_y, drop = FALSE], variables)
+  model <- lm(formula, data = data)
+  coefficients <- coef(model)
+  r_squared <- summary(model)$r.squared
+  var_cov <- residuals(model)
+  p_values <- summary(model)$coefficients[, "Pr(>|t|)"]
+  significance <- ifelse(p_values < 0.001, "***",
+                         ifelse(p_values < 0.01, "**",
+                                ifelse(p_values < 0.05, "*", "")))
+  t_stats <- paste0("(", round(coefficients / summary(model)$coefficients[, "Std. Error"], 2), ")")
+  coefficients <- paste0(round(coefficients, 10))
+  var_cov <- paste0(round(var_cov, 6))
+  
+  gg <- data.frame(var_cov)
+  temp_df <- data.frame(coefficients)
+  temp_df["R2", ] <- r_squared
+  temp_df <- t(temp_df)
+  rownames(temp_df) <- NULL
+  rownames(temp_df) <- col_y
+  epsilon <- cbind(epsilon, gg)
+  results <- rbind(results, temp_df)
+  
+  coef <- rbind(coef, coefficients)
+}
+
+rownames(results) <- colnames(ret)
+results <- data.frame(results)
+
+new_colnames <- c("Intercept", "PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10", "R-squared")
+new_colnames_epsilon <- c("PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10")
+colnames(results) <- new_colnames
+results <- data.frame(results)
+colnames(epsilon) <- new_colnames_epsilon
+colnames(coef)<-c("Intercept", "PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10")
+rownames(coef)<-colnames(ret)
+print(results)
+```
+
+### Method 1-2
+
+```{r}
+#sigmasegnato<-var(epsilon)
+#sigmasegnato<-var(individuals_ret_lag)
+intercepts<-as.vector(coef[,1])
+intercepts <- as.numeric(gsub("\"", "", intercepts))
+coefficienti<-as.matrix(coef[,-1])
+coefficienti <- apply(coefficienti, 2, function(x) as.numeric(gsub("\"", "", x)))
+coefcoord<-as.matrix(coordinates)
+rsegnato<-coefficienti%*%t(coefcoord)
+rsegnato<-rsegnato+intercepts
+rsegnato<-t(rsegnato)
+```
+
+```{r}
+sigmasegnato<-var(rsegnato)
+sigma<-var(individuals_ret[-c(1:window),])
+r<-chol(sigma)
+r_inverse<-inv(r)
+r_r_inv<-t(r_inverse)%*%sigmasegnato%*%r_inverse
+mppeigen<-eigen(r_r_inv)
+num<-t(r_inverse)%*%mppeigen$vectors[,1]
+ones_vector<- rep(1,10)
+den<-t(ones_vector)%*%t(r_inverse)%*%mppeigen$vectors[,1]
+weights<-as.matrix(num)%*%(1/den)
+rownames(weights)<-colnames(individuals_ret)
+data.frame(weights)
+```
+
+# Computing Portfolio Returns
+
+## MPP
+
+```{r}
+identity_matrix <- matrix(1, nrow = nrow(ret_lag), ncol = ncol(ret_lag))
+identity_matrix[ret_lag > 0] <- 1
+```
+
+```{r}
+MPP1<- as.matrix(identity_matrix)*as.matrix(ret[-c(1:window),])
+```
+
+```{r}
+MPP<-as.matrix(MPP1)%*%as.matrix((ret_pca$var$contrib/100)%*%weights)
+MPP<-data.frame(MPP)
+```
+
+```{r}
+In_sample_MPP<- data.frame(cumsum(MPP))
+pois<-(ret_pca$var$contrib/100)%*%weights  ##to solve with JT
+print(pois)
+```
+
+#### Regression over time of MPP In-Sample
+
+```{r}
+moving_regression_In_sample<-roll_regres(MPP ~ ., data = cbind(In_sample_MPP, coordinates),width = 30,do_compute=c("r.squareds","sigmas"))
+```
+
+```{r}
+summary(moving_regression_In_sample$r.squareds)
+```
+
+```{r}
+moving_regression_In_sample_Rsquared<-data.frame(moving_regression_In_sample$r.squareds)
+dygraph(moving_regression_In_sample_Rsquared)%>%
+  dyRangeSelector()
+```
+
+## Equal-Weigted Portfolio
+
+```{r}
+ret_lag<-data.frame(ret_lag)
+```
+
+```{r}
+Equal_Weighted<-data.frame(rowSums(ret[-c(1:window),])*(1/10))
+Equal_Weighted_cumulative<- as.matrix(cumprod(Equal_Weighted+1))
+Equal_Weighted_cumulative<-data.frame(Equal_Weighted_cumulative)
+rownames(Equal_Weighted_cumulative)<-NULL 
+dim(Equal_Weighted_cumulative)
+```
+
+```{r}
+portfolio_excess_returns <- as.matrix(Equal_Weighted-0.0003)
+
+StdDevEqual_weighted <- sd(portfolio_excess_returns)
+mean_Equal_weighted <- mean(portfolio_excess_returns)
+sharpe_ratioEqualweighted <- (mean_Equal_weighted ) / StdDevEqual_weighted
+```
+
+## BTC-Holders Portfolio
+
+```{r}
+BTC<-cumprod((ret[-c(1:window),])$Close_BTC+1)
+```
+
+## Long Only MPP portfolio
+
+## Comparison
+
+```{r}
+general_returns <- cbind(In_sample_MPP, Equal_Weighted_cumulative,BTC)
+#rownames(general_returns)<-rownames(ret[-c(1:window),])
+columnsnames<-c("In_Sample_MPP","Equal_Weighted","BTC_Holder")
+colnames(general_returns)<-columnsnames
+colSums(general_returns)
+```
+
+```{r}
+colMeans(general_returns)
+```
+
+```{r}
+dygraph( general_returns,main= "Strategies Returns") %>%
+  dyRangeSelector()
+```
+
+# Portfolios Regression Analysis
+
+```{r}
+input<-cbind(MPP,Equal_Weighted,ret[-c(1:window),1])
+colnames(input)<-columnsnames
+```
+
+```{r}
+variables <- coordinates
+results <- data.frame()
+
+for (col_y in colnames(input)) {
+  formula <- as.formula(paste(col_y, "~ ."))
+  data <- cbind(input[,col_y,drop=FALSE], variables)
+  model <- lm(formula, data = data)
+  coefficients <- coef(model)
+  r_squared <- summary(model)$r.squared
+  
+  
+  p_values <- summary(model)$coefficients[, "Pr(>|t|)"]
+  significance <- ifelse(p_values < 0.001, "***",
+                  ifelse(p_values < 0.01, "**",
+                  ifelse(p_values < 0.05, "*", "")))
+  t_stats <- paste0("(", round(coefficients / summary(model)$coefficients[, "Std. Error"], 2), ")")
+  coefficients <- paste0(round(coefficients, 6), significance, t_stats)
+  
+  
+ 
+  temp_df <- data.frame(coefficients)
+  temp_df["R2", ] <- r_squared
+  temp_df <- t(temp_df)
+  rownames(temp_df) <- NULL
+  rownames(temp_df) <- col_y
+  
+  results <- rbind(results, temp_df)
+}
+
+rownames(results) <- colnames(input)
+results <- data.frame(results)
+
+new_colnames <- c("Intercept", "PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10", "R-squared")
+
+colnames(results) <- new_colnames
+results <- data.frame(results)
+
+
+print(results)
+```
+
+question: why MPP with long/short positions allowed is more predictable than the neutral one?
+
+why if I increase the window time, so the returns used, the R squared grows?
+
+# Out-Of-Sample Strategy
+
+## Uncostrained
+
+```{r}
+coef <- data.frame()
+result_list <- list()
+individuals_test<-individuals_ret
+individuals_test_lag1<-individuals_ret_lag
+n<-nrow(individuals_test)
+window<-90
+loops=round(n/window)+1
+
+for(l in 1:loops){
+  
+start_index <- l * 1 + (l - 1) * window
+
+w = start_index:(start_index+window)
+w<- w[w<=nrow(individuals_test)]
+
+
+individuals_test1t<-individuals_test[w,]
+individuals_test_lag1t<-individuals_test_lag1[w,]
+
+
+for (col_y in colnames(ret)) {
+  formula <- as.formula(paste(col_y, "~ ."))
+  data <- cbind(ret[w, col_y, drop = FALSE], individuals_test_lag1t)
+
+  model <- lm(formula, data = data)
+  coefficients <- coef(model)
+   r_squared <- summary(model)$r.squared
+  
+coefficients<-unlist(coefficients)
+r_squared<-unlist(r_squared)
+
+intercepts <- coefficients[1]
+coefficienti<-as.matrix(coefficients[-1])
+}
+#rsegnato<-t(coefficienti)%*%t(individuals_test_lag1t)
+
+
+rsegnato1 <- t(outer(coefficienti[1, ], individuals_test_lag1t[,1], "*"))
+rsegnato2<-t(outer(coefficienti[2, ], individuals_test_lag1t[,2], "*"))
+rsegnato3<-t(outer(coefficienti[3, ], individuals_test_lag1t[,3], "*"))
+rsegnato4<-t(outer(coefficienti[4, ], individuals_test_lag1t[,4], "*"))
+rsegnato5<-t(outer(coefficienti[5, ], individuals_test_lag1t[,5], "*"))
+rsegnato6<-t(outer(coefficienti[6, ], individuals_test_lag1t[,6], "*"))
+rsegnato7<-t(outer(coefficienti[7, ], individuals_test_lag1t[,7], "*"))
+rsegnato8<-t(outer(coefficienti[8, ], individuals_test_lag1t[,8], "*"))
+rsegnato9<-t(outer(coefficienti[9, ], individuals_test_lag1t[,9], "*"))
+rsegnato10<-t(outer(coefficienti[10, ], individuals_test_lag1t[,10], "*"))
+
+rsegnato<-(cbind(rsegnato1,rsegnato2,rsegnato3,rsegnato4,rsegnato5,rsegnato6,rsegnato7,rsegnato8,rsegnato9,rsegnato10))
+rsegnato<-rsegnato+intercepts
+
+
+
+
+  sigmasegnato <- var(rsegnato)
+  sigma <- var(individuals_test1t)#da rivedere
+  
+  r <- chol(sigma)
+  r_inverse <- solve(r)
+  r_r_inv <- t(r_inverse) %*% sigmasegnato %*% r_inverse
+  mppeigen <- eigen(r_r_inv)
+  num <- t(r_inverse) %*% mppeigen$vectors[, 1]
+  ones_vector <- rep(1, ncol(ret_lag1))
+  den <- t(ones_vector) %*% t(r_inverse) %*% mppeigen$vectors[, 1]
+  weights <- as.matrix(num) %*% (1 / den)
+  
+  
+  
+  identity_matrix <- matrix(1, nrow = nrow(ret_lag1[w,]), ncol = ncol(ret_lag1))
+  identity_matrix[ret_lag1[w,] > 0] <- 1
+  MPP1 <- as.matrix(identity_matrix) * as.matrix(ret[w, ])
+  MPP <- as.matrix(MPP1) %*% as.matrix((testpca$var$contrib / 100) %*% weights)
+  
+  result_list <- c(result_list, MPP)
+   start_index <- start_index + window + 1
+  if (start_index > n) {
+    start_index <- n - window - 1
+  }
+}
+
+returns1 <- do.call(rbind, result_list)
+ciccio<-nrow(ret)-nrow(returns1)
+rownames(returns1)<-rownames(ret[c(1:(n-ciccio)),])
+```
+
+https://quantpedia.com/what-is-the-bitcoins-risk-free-interest-rate/#:\~:text=On%20average%2C%20the%20risk%2Dfree,traditional%20bonds%20or%20bank%20deposits.
+
+To compute the sharpe ratio we will use the computation of the free risk rate done by the website linked above
+
+```{r}
+portfolio_excess_returns<-returns1-0.007
+mean1<-colMeans(portfolio_excess_returns)
+StdDev1<-sd(portfolio_excess_returns)
+sharpe_ratio_manual <- mean1/StdDev1
+```
+
+```{r}
+out_of_sample<-data.frame(cumprod(returns1+1))
+rownames(out_of_sample)<-rownames(ret[c(1:(n-ciccio)),])
+colnames(out_of_sample)[1] ="cumulative"
+colSums(out_of_sample)
+```
+
+```{r}
+dygraph(out_of_sample)%>%
+  dyRangeSelector()
+```
+
+## Dynamic linear regression of unconstrained/choosing the window
+
+```{r}
+moving_regression<-roll_regres(cumulative ~ ., data = cbind(out_of_sample, coordinates[c(1:(n-ciccio)),]),width = 60,do_compute=c("r.squareds","sigmas"))
+```
+
+```{r}
+moving_regression_rsquared<-data.frame(moving_regression$r.squareds)
+dygraph(moving_regression_rsquared)%>%
+  dyRangeSelector()
+```
+
+```{r}
+summary(moving_regression$r.squareds)
+```
+
+```{r}
+moving_regression_coefficients<-data.frame(moving_regression$coefs)
+dygraph(moving_regression_coefficients[,c(2,3,4)])%>%
+  dyRangeSelector()
+```
+
+```{r}
+results <- list()  
+
+for (width in 22:600) {
+  moving_regression <- roll_regres(cumulative ~ ., data = cbind(out_of_sample, coordinates[c(1:(n-ciccio)),]), width = width, do_compute = c("r.squareds", "sigmas"))
+  results[[as.character(width)]] <- summary(moving_regression$r.squareds)[4]
+}
+for (width in names(results)) {
+  cat("Width:", width, "\n")
+}
+results<-unlist(results)
+results<-data.frame(results)
+```
+
+```{r}
+# Grafico dei dati con indice carattere
+plot(1:length(results$results), results$results, type = "l", xlab = "time window", ylab = "R^2", xaxt = "n")
+axis(1, at = 1:length(results$results), labels = rownames(results), cex.axis = 0.5, las = 2)
+```
+
+## Constrained
+
+```{r}
+result_list <- list()
+
+n <- nrow(individuals_test)
+window <- 15
+start_index <- 1
+while (start_index < n) {
+  w <- start_index:(start_index + window)
+  w <- w[w <= nrow(individuals_test)]
+
+  individuals_test1t <- individuals_test[w, ]
+  individuals_test_lag1t <- individuals_test_lag1[w , ]
+
+  
+  
+  for (col_y in colnames(ret)) {
+  formula <- as.formula(paste(col_y, "~ ."))
+  data <- cbind(ret[w, col_y, drop = FALSE], individuals_test_lag1t)
+
+  model <- lm(formula, data = data)
+  coefficients <- coef(model)
+  
+coefficients<-unlist(coefficients)
+
+
+intercepts <- coefficients[1]
+coefficienti<-as.matrix(coefficients[-1])
+}
+#rsegnato<-t(coefficienti)%*%t(individuals_test_lag1t)
+
+
+rsegnato1 <- t(outer(coefficienti[1, ], individuals_test_lag1t[,1], "*"))
+rsegnato2<-t(outer(coefficienti[2, ], individuals_test_lag1t[,2], "*"))
+rsegnato3<-t(outer(coefficienti[3, ], individuals_test_lag1t[,3], "*"))
+rsegnato4<-t(outer(coefficienti[4, ], individuals_test_lag1t[,4], "*"))
+rsegnato5<-t(outer(coefficienti[5, ], individuals_test_lag1t[,5], "*"))
+rsegnato6<-t(outer(coefficienti[6, ], individuals_test_lag1t[,6], "*"))
+rsegnato7<-t(outer(coefficienti[7, ], individuals_test_lag1t[,7], "*"))
+rsegnato8<-t(outer(coefficienti[8, ], individuals_test_lag1t[,8], "*"))
+rsegnato9<-t(outer(coefficienti[9, ], individuals_test_lag1t[,9], "*"))
+rsegnato10<-t(outer(coefficienti[10, ], individuals_test_lag1t[,10], "*"))
+
+rsegnato<-(cbind(rsegnato1,rsegnato2,rsegnato3,rsegnato4,rsegnato5,rsegnato6,rsegnato7,rsegnato8,rsegnato9,rsegnato10))
+rsegnato<-rsegnato+intercepts
+  
+  
+  
+  
+  
+  
+  sigmasegnato <- var(rsegnato)
+  sigma <- var(individuals_test1t)  # da rivedere
+
+  r <- chol(sigma)
+  r_inverse <- solve(r)
+  r_r_inv <- t(r_inverse) %*% sigmasegnato %*% r_inverse
+  mppeigen <- eigen(r_r_inv)
+  num <- t(r_inverse) %*% mppeigen$vectors[, 1]
+  ones_vector <- rep(1, ncol(ret_lag1))
+  den <- t(ones_vector) %*% t(r_inverse) %*% mppeigen$vectors[, 1]
+  weights <- as.matrix(num) %*% (1 / den)
+  
+ 
+  
+  identity_matrix <- matrix(1, nrow = nrow(ret_lag1[w, ]), ncol = ncol(ret_lag1))
+  identity_matrix[ret_lag1[w, ] > 0] <- 1
+  MPP1 <- as.matrix(identity_matrix) * as.matrix(ret[w, ])
+  c<-as.matrix((testpca$var$contrib / 100) %*% weights)
+  
+  
+  c[c < 0] <- 0
+  sum_positive <- sum(c[c > 0])
+  limit<-0.75
+  if (sum_positive > limit) {
+    c[c > 0] <- pmin(c[c > 0], limit)
+    sum_positive <- sum(c)
+  }
+  c <- c / sum_positive
+
+  
+  
+  
+  
+  MPP <- as.matrix(MPP1) %*% c
+
+  result_list <- c(result_list, MPP)
+  start_index <- start_index + window + 1
+  if (start_index > n) {
+    start_index <- n - window - 1
+  }
+}
+
+returns <- do.call(rbind, result_list)
+rownames(returns) <-  rownames(ret[c(1:nrow(returns)), ])
+```
+
+```{r}
+sum(cumprod(returns+1))
+```
+
+```{r}
+summary(cumprod(returns+1))
+```
+
+# Out of Sample performance Sub-samples
+
+## 28/11/2019-19/02/2021
+
+```{r}
+result_list <- list()
+
+n <- nrow(individuals_test[1:450,])
+window <- 20
+start_index <- 1
+while (start_index < n) {
+  w <- start_index:(start_index + window)
+  w <- w[w <= nrow(individuals_test)]
+
+  individuals_test1t <- individuals_test[w, ]
+  individuals_test_lag1t <- individuals_test_lag1[w, ]
+
+  
+  
+  
+  
+  for (col_y in colnames(ret)) {
+  formula <- as.formula(paste(col_y, "~ ."))
+  data <- cbind(ret[w, col_y, drop = FALSE], individuals_test_lag1t)
+
+  model <- lm(formula, data = data)
+  coefficients <- coef(model)
+  
+coefficients<-unlist(coefficients)
+
+
+intercepts <- coefficients[1]
+coefficienti<-as.matrix(coefficients[-1])
+}
+#rsegnato<-t(coefficienti)%*%t(individuals_test_lag1t)
+
+
+rsegnato1 <- t(outer(coefficienti[1, ], individuals_test_lag1t[,1], "*"))
+rsegnato2<-t(outer(coefficienti[2, ], individuals_test_lag1t[,2], "*"))
+rsegnato3<-t(outer(coefficienti[3, ], individuals_test_lag1t[,3], "*"))
+rsegnato4<-t(outer(coefficienti[4, ], individuals_test_lag1t[,4], "*"))
+rsegnato5<-t(outer(coefficienti[5, ], individuals_test_lag1t[,5], "*"))
+rsegnato6<-t(outer(coefficienti[6, ], individuals_test_lag1t[,6], "*"))
+rsegnato7<-t(outer(coefficienti[7, ], individuals_test_lag1t[,7], "*"))
+rsegnato8<-t(outer(coefficienti[8, ], individuals_test_lag1t[,8], "*"))
+rsegnato9<-t(outer(coefficienti[9, ], individuals_test_lag1t[,9], "*"))
+rsegnato10<-t(outer(coefficienti[10, ], individuals_test_lag1t[,10], "*"))
+
+rsegnato<-(cbind(rsegnato1,rsegnato2,rsegnato3,rsegnato4,rsegnato5,rsegnato6,rsegnato7,rsegnato8,rsegnato9,rsegnato10))
+rsegnato<-rsegnato+intercepts
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  sigmasegnato <- var(rsegnato)
+  sigma <- var(individuals_test1t)  # da rivedere
+
+  r <- chol(sigma)
+  r_inverse <- solve(r)
+  r_r_inv <- t(r_inverse) %*% sigmasegnato %*% r_inverse
+  mppeigen <- eigen(r_r_inv)
+  num <- t(r_inverse) %*% mppeigen$vectors[, 1]
+  ones_vector <- rep(1, ncol(ret_lag1))
+  den <- t(ones_vector) %*% t(r_inverse) %*% mppeigen$vectors[, 1]
+  weights <- as.matrix(num) %*% (1 / den)
+  
+ 
+  
+  identity_matrix <- matrix(1, nrow = nrow(ret_lag1[w, ]), ncol = ncol(ret_lag1))
+  identity_matrix[ret_lag1[w, ] > 0] <- 1
+  MPP1 <- as.matrix(identity_matrix) * as.matrix(ret[w, ])
+  c<-as.matrix((testpca$var$contrib / 100) %*% weights)
+  
+  
+  c[c < 0] <- 0
+  sum_positive <- sum(c[c > 0])
+  limit<-0.25
+  if (sum_positive > limit) {
+    c[c > 0] <- pmin(c[c > 0], limit)
+    sum_positive <- sum(c)
+  }
+  c <- c / sum_positive
+
+  
+  
+  
+  
+  MPP <- as.matrix(MPP1) %*% c
+
+  result_list <- c(result_list, MPP)
+  start_index <- start_index + window + 1
+  if (start_index > n) {
+    start_index <- n - window - 1
+  }
+}
+
+returns <- do.call(rbind, result_list)
+rownames(returns) <- rownames(ret[c(1:nrow(returns)), ])
+```
+
+```{r}
+sum(cumsum(returns))
+```
+
+```{r}
+summary(cumsum(returns))
+```
+
+## 19/02/2021-15/03/2023
+
+```{r}
+result_list <- list()
+
+n <- nrow(individuals_test[450:1203,])
+window <- 22
+start_index <- 1
+while (start_index < n) {
+  w <- start_index:(start_index + window)
+  w <- w[w <= nrow(individuals_test)]
+
+  individuals_test1t <- individuals_test[w, ]
+  individuals_test_lag1t <- individuals_test_lag1[w , ]
+
+  
+  
+    
+  for (col_y in colnames(ret)) {
+  formula <- as.formula(paste(col_y, "~ ."))
+  data <- cbind(ret[w, col_y, drop = FALSE], individuals_test_lag1t)
+
+  model <- lm(formula, data = data)
+  coefficients <- coef(model)
+  
+coefficients<-unlist(coefficients)
+
+
+intercepts <- coefficients[1]
+coefficienti<-as.matrix(coefficients[-1])
+}
+#rsegnato<-t(coefficienti)%*%t(individuals_test_lag1t)
+
+
+rsegnato1 <- t(outer(coefficienti[1, ], individuals_test_lag1t[,1], "*"))
+rsegnato2<-t(outer(coefficienti[2, ], individuals_test_lag1t[,2], "*"))
+rsegnato3<-t(outer(coefficienti[3, ], individuals_test_lag1t[,3], "*"))
+rsegnato4<-t(outer(coefficienti[4, ], individuals_test_lag1t[,4], "*"))
+rsegnato5<-t(outer(coefficienti[5, ], individuals_test_lag1t[,5], "*"))
+rsegnato6<-t(outer(coefficienti[6, ], individuals_test_lag1t[,6], "*"))
+rsegnato7<-t(outer(coefficienti[7, ], individuals_test_lag1t[,7], "*"))
+rsegnato8<-t(outer(coefficienti[8, ], individuals_test_lag1t[,8], "*"))
+rsegnato9<-t(outer(coefficienti[9, ], individuals_test_lag1t[,9], "*"))
+rsegnato10<-t(outer(coefficienti[10, ], individuals_test_lag1t[,10], "*"))
+
+rsegnato<-(cbind(rsegnato1,rsegnato2,rsegnato3,rsegnato4,rsegnato5,rsegnato6,rsegnato7,rsegnato8,rsegnato9,rsegnato10))
+rsegnato<-rsegnato+intercepts
+  
+  
+  
+  
+  
+  
+  
+  
+  sigmasegnato <- var(rsegnato)
+  sigma <- var(individuals_test1t)  # da rivedere
+
+  r <- chol(sigma)
+  r_inverse <- solve(r)
+  r_r_inv <- t(r_inverse) %*% sigmasegnato %*% r_inverse
+  mppeigen <- eigen(r_r_inv)
+  num <- t(r_inverse) %*% mppeigen$vectors[, 1]
+  ones_vector <- rep(1, ncol(ret_lag1))
+  den <- t(ones_vector) %*% t(r_inverse) %*% mppeigen$vectors[, 1]
+  weights <- as.matrix(num) %*% (1 / den)
+  
+ 
+  
+  identity_matrix <- matrix(1, nrow = nrow(ret_lag1[w, ]), ncol = ncol(ret_lag1))
+  identity_matrix[ret_lag1[w, ] > 0] <- 1
+  MPP1 <- as.matrix(identity_matrix) * as.matrix(ret[w, ])
+  c<-as.matrix((testpca$var$contrib / 100) %*% weights)
+  
+  
+  c[c < 0] <- 0
+  sum_positive <- sum(c[c > 0])
+  limit<-0.25
+  if (sum_positive > limit) {
+    c[c > 0] <- pmin(c[c > 0], limit)
+    sum_positive <- sum(c)
+  }
+  c <- c / sum_positive
+
+  
+  
+  
+  
+  MPP <- as.matrix(MPP1) %*% c
+
+  result_list <- c(result_list, MPP)
+  start_index <- start_index + window + 1
+  if (start_index > n) {
+    start_index <- n - window - 1
+  }
+}
+
+returns <- do.call(rbind, result_list)
+rownames(returns) <- rownames(ret[c(1:nrow(returns)), ])
+```
+
+```{r}
+summary(cumsum(returns))
+```
+
+```{r}
+sum(cumsum(returns))
+```
